@@ -80,34 +80,10 @@ final class PhabricatorSearchRelationshipController
       }
 
       try {
-        foreach ($add_phids as $add_phid) {
-          $dst_object = idx($dst_objects, $add_phid);
-          if (!$dst_object) {
-            throw new Exception(
-              pht(
-                'You can not create a relationship to object "%s" because '.
-                'the object does not exist or could not be loaded.',
-                $add_phid));
-          }
-
-          if ($add_phid == $src_phid) {
-            throw new Exception(
-              pht(
-                'You can not create a relationship to object "%s" because '.
-                'objects can not be related to themselves.',
-                $add_phid));
-          }
-
-          if (!$relationship->canRelateObjects($object, $dst_object)) {
-            throw new Exception(
-              pht(
-                'You can not create a relationship (of type "%s") to object '.
-                '"%s" because it is not the right type of object for this '.
-                'relationship.',
-                $relationship->getRelationshipConstant(),
-                $add_phid));
-          }
-        }
+        $relationship->assertCanRelateObjects(
+          $object,
+          $add_phids,
+          $dst_objects);
       } catch (Exception $ex) {
         return $this->newUnrelatableObjectResponse($ex, $done_uri);
       }
