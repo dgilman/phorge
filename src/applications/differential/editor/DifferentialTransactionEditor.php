@@ -13,6 +13,8 @@ final class DifferentialTransactionEditor
   private $ownersDiff;
   private $ownersChangesets;
 
+  private $inlineStateComments = array();
+
   public function getEditorApplicationClass() {
     return PhabricatorDifferentialApplication::class;
   }
@@ -81,10 +83,20 @@ final class DifferentialTransactionEditor
 
     $errors = parent::validateTransaction($object, $type, $xactions);
 
-    if ($type === PhabricatorTransactions::TYPE_EDGE) {
-      $errors = array_merge(
-        $errors,
-        $this->validateCommitEdgeTransactions($object, $type, $xactions));
+    switch ($type) {
+      case PhabricatorTransactions::TYPE_EDGE:
+        $errors = array_merge(
+          $errors,
+          $this->validateCommitEdgeTransactions($object, $type, $xactions));
+        break;
+      case PhabricatorTransactions::TYPE_INLINESTATE:
+        $errors = array_merge(
+          $errors,
+          $this->validateInlineStateTransactions(
+            $object,
+            $type,
+            $xactions));
+        break;
     }
 
     return $errors;
@@ -155,6 +167,259 @@ final class DifferentialTransactionEditor
     return $errors;
   }
 
+  /**
+   * Validate inline state transactions.
+   *
+   * These transactions come from the web UI (which publishes the draft states
+   * of the actor), from daemons, and from "inlines.done" in the API. Check all
+   * of them, so a new source of these transactions can not skip the checks.
+   */
+  private function validateInlineStateTransactions(
+    DifferentialRevision $object,
+    $type,
+    array $xactions) {
+
+    $errors = array();
+    $actor = $this->getActor();
+    $type_comment = PhabricatorPHIDConstants::PHID_TYPE_XCMT;
+    $state_map = PhabricatorTransactions::getInlineStateMap();
+    $final_states = array(
+      PhabricatorInlineComment::STATE_DONE => true,
+      PhabricatorInlineComment::STATE_UNDONE => true,
+    );
+
+    foreach ($xactions as $xaction) {
+      $new = $xaction->getNewValue();
+      if (!is_array($new)) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          pht(
+            'Inline state transactions must have a map of inline comment '.
+            'PHIDs to states as a value.'),
+          $xaction);
+        continue;
+      }
+
+      $bad_phids = array();
+      $bad_states = array();
+      foreach ($new as $phid => $state) {
+        if (phid_get_type($phid) !== $type_comment) {
+          $bad_phids[] = $phid;
+        } else if (!is_string($state) || !isset($final_states[$state])) {
+          $bad_states[] = $phid;
+        }
+      }
+
+      if ($bad_phids) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          pht(
+            'These PHIDs are not inline comments: %s.',
+            implode(', ', $bad_phids)),
+          $xaction);
+      }
+
+      if ($bad_states) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          pht(
+            'These inline comments have a state which is not "done" or '.
+            '"undone": %s.',
+            implode(', ', $bad_states)),
+          $xaction);
+      }
+
+      if ($bad_phids || $bad_states) {
+        continue;
+      }
+
+      $inlines = $this->loadInlineStateComments($object, array_keys($new));
+
+      $missing_phids = array();
+      $draft_phids = array();
+      $denied_phids = array();
+      foreach ($new as $phid => $state) {
+        $inline = idx($inlines, $phid);
+        if (!$inline || $inline->getIsDeleted()) {
+          $missing_phids[] = $phid;
+        } else if ($inline->isDraft() &&
+          (idx($state_map, $inline->getFixedState()) !== $state)) {
+          // A draft can only get the state that its draft state gives when
+          // the draft is published. This is what the web UI does.
+          $draft_phids[] = $phid;
+        } else if ($actor->isOmnipotent()) {
+          // Daemons edit with an omnipotent actor, and can act as the
+          // revision author. See DifferentialDiffExtractionEngine.
+          continue;
+        } else if (!$inline->canViewerChangeDoneState($actor, $object)) {
+          $denied_phids[] = $phid;
+        }
+      }
+
+      if ($missing_phids) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          pht(
+            'These inline comments do not exist on this revision, or you do '.
+            'not have permission to see them: %s.',
+            implode(', ', $missing_phids)),
+          $xaction);
+      }
+
+      if ($draft_phids) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          pht(
+            'These inline comments are not published: %s.',
+            implode(', ', $draft_phids)),
+          $xaction);
+      }
+
+      if ($denied_phids) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          pht(
+            'You can not mark these inline comments as done or not done, '.
+            'because you are not the revision author: %s.',
+            implode(', ', $denied_phids)),
+          $xaction);
+      }
+    }
+
+    return $errors;
+  }
+
+  /**
+   * Load inline comments on a revision for inline state transactions.
+   *
+   * This loads published inlines and the drafts of the actor. It does not
+   * load the drafts of other users, so a caller can not find out which
+   * drafts exist. The editor keeps the inlines that it loaded, so it loads
+   * each inline one time only.
+   */
+  private function loadInlineStateComments(
+    DifferentialRevision $object,
+    array $phids) {
+
+    $type_comment = PhabricatorPHIDConstants::PHID_TYPE_XCMT;
+
+    $load_phids = array();
+    foreach ($phids as $phid) {
+      if (phid_get_type($phid) !== $type_comment) {
+        continue;
+      }
+      if (array_key_exists($phid, $this->inlineStateComments)) {
+        continue;
+      }
+      $load_phids[] = $phid;
+    }
+
+    if ($load_phids && $object->getPHID()) {
+      $inlines = id(new DifferentialDiffInlineCommentQuery())
+        ->setViewer($this->getActor())
+        ->withObjectPHIDs(array($object->getPHID()))
+        ->withPHIDs($load_phids)
+        ->withPublishedComments(true)
+        ->withPublishableComments(true)
+        ->execute();
+      $inlines = mpull($inlines, 'newInlineCommentObject', 'getPHID');
+
+      foreach ($load_phids as $phid) {
+        $this->inlineStateComments[$phid] = idx($inlines, $phid);
+      }
+    }
+
+    return array_filter(
+      array_select_keys($this->inlineStateComments, $phids));
+  }
+
+  /**
+   * Record the current state and the author of each inline which has no old
+   * state on an inline state transaction. "inlines.done" from the API gives
+   * no old states. The transactions from the web UI record the same
+   * information. See PHI995.
+   */
+  private function populateInlineStateOldValue(
+    DifferentialRevision $object,
+    PhabricatorApplicationTransaction $xaction) {
+
+    $old = $xaction->getOldValue();
+    $new = $xaction->getNewValue();
+    if (!is_array($old) || !is_array($new)) {
+      // Validation rejects this transaction.
+      return;
+    }
+
+    $missing_phids = array_keys(array_diff_key($new, $old));
+    if (!$missing_phids) {
+      return;
+    }
+
+    $inlines = $this->loadInlineStateComments($object, $missing_phids);
+
+    $details = $xaction->getMetadataValue('inline.details', array());
+    foreach ($missing_phids as $phid) {
+      $inline = idx($inlines, $phid);
+      if (!$inline) {
+        continue;
+      }
+
+      $old[$phid] = $inline->getFixedState();
+      $details[$phid] = array(
+        'authorPHID' => $inline->getAuthorPHID(),
+      );
+    }
+
+    $xaction
+      ->setOldValue($old)
+      ->setMetadataValue('inline.details', $details);
+  }
+
+  protected function filterTransactions(
+    PhabricatorLiskDAO $object,
+    array $xactions) {
+
+    // Remove the inlines which already have the new state, so the timeline
+    // and mail only count the inlines that change. An inline which nobody
+    // marked has no state, which is the same as "undone".
+    foreach ($xactions as $xaction) {
+      $type = $xaction->getTransactionType();
+      if ($type !== PhabricatorTransactions::TYPE_INLINESTATE) {
+        continue;
+      }
+
+      $old = $xaction->getOldValue();
+      $new = $xaction->getNewValue();
+      if (!is_array($old) || !is_array($new)) {
+        continue;
+      }
+
+      foreach ($new as $phid => $state) {
+        $old_state = idx($old, $phid);
+        if ($old_state === null) {
+          $old_state = PhabricatorInlineComment::STATE_UNDONE;
+        }
+
+        if ($old_state === $state) {
+          unset($old[$phid]);
+          unset($new[$phid]);
+        }
+      }
+
+      $xaction
+        ->setOldValue($old)
+        ->setNewValue($new);
+    }
+
+    return parent::filterTransactions($object, $xactions);
+  }
+
   protected function expandTransactions(
     PhabricatorLiskDAO $object,
     array $xactions) {
@@ -165,6 +430,7 @@ final class DifferentialTransactionEditor
           // If we have an "Inline State" transaction already, the caller
           // built it for us so we don't need to expand it again.
           $this->didExpandInlineState = true;
+          $this->populateInlineStateOldValue($object, $xaction);
           break;
         case DifferentialRevisionPlanChangesTransaction::TRANSACTIONTYPE:
           if ($xaction->getMetadataValue('draft.demote')) {
@@ -324,12 +590,16 @@ final class DifferentialTransactionEditor
         $table = new DifferentialTransactionComment();
         $conn_w = $table->establishConnection('w');
         foreach ($xaction->getNewValue() as $phid => $state) {
+          // Also match the revision, so this can only change inlines on this
+          // revision.
           queryfx(
             $conn_w,
-            'UPDATE %T SET fixedState = %s WHERE phid = %s',
+            'UPDATE %T SET fixedState = %s
+              WHERE phid = %s AND revisionPHID = %s',
             $table->getTableName(),
             $state,
-            $phid);
+            $phid,
+            $object->getPHID());
         }
         break;
     }

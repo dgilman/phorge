@@ -311,6 +311,15 @@ final class DifferentialRevisionEditEngine
       ->setConduitTypeDescription(pht('List of commits.'))
       ->setValue(array());
 
+    $fields[] = id(new DifferentialRevisionInlineDoneEditField())
+      ->setKey('inlines.done')
+      ->setIsFormField(false)
+      ->setTransactionType(PhabricatorTransactions::TYPE_INLINESTATE)
+      ->setConduitDescription(
+        pht('Mark published inline comments as done or not done.'))
+      ->setConduitTypeDescription(
+        pht('Map of inline comment PHIDs to done states.'));
+
     $actions = DifferentialRevisionActionTransaction::loadAllActions();
     $actions = msortv($actions, 'getRevisionActionOrderVector');
 

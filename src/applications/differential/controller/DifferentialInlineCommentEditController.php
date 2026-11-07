@@ -98,17 +98,7 @@ final class DifferentialInlineCommentEditController
       throw new Exception(pht('Unable to load revision.'));
     }
 
-    $viewer_phid = $viewer->getPHID();
-    $is_owner = ($viewer_phid == $revision->getAuthorPHID());
-    $is_author = ($viewer_phid == $inline->getAuthorPHID());
-    $is_draft = ($inline->isDraft());
-
-    if ($is_owner) {
-      // You own the revision, so you can mark the comment as "Done".
-    } else if ($is_author && $is_draft) {
-      // You made this comment and it's still a draft, so you can mark
-      // it as "Done".
-    } else {
+    if (!$inline->canViewerChangeDoneState($viewer, $revision)) {
       throw new Exception(
         pht(
           'You are not the revision owner, and this is not a draft comment '.
