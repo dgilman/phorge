@@ -81,10 +81,20 @@ final class DifferentialTransactionEditor
 
     $errors = parent::validateTransaction($object, $type, $xactions);
 
-    if ($type === PhabricatorTransactions::TYPE_EDGE) {
-      $errors = array_merge(
-        $errors,
-        $this->validateCommitEdgeTransactions($object, $type, $xactions));
+    switch ($type) {
+      case PhabricatorTransactions::TYPE_EDGE:
+        $errors = array_merge(
+          $errors,
+          $this->validateCommitEdgeTransactions($object, $type, $xactions));
+        break;
+      case PhabricatorTransactions::TYPE_INLINESTATE:
+        $errors = array_merge(
+          $errors,
+          $this->validateConduitInlineStateTransactions(
+            $object,
+            $type,
+            $xactions));
+        break;
     }
 
     return $errors;
@@ -148,6 +158,108 @@ final class DifferentialTransactionEditor
           $type,
           pht('Invalid'),
           $ex->getMessage(),
+          $xaction);
+      }
+    }
+
+    return $errors;
+  }
+
+  /**
+   * Validate "inlines.done" transactions from the API.
+   *
+   * Inline state transactions from the web UI are built from the actor's
+   * draft states, which were checked when the drafts were saved. API
+   * transactions name inline comments directly, so check them here.
+   */
+  private function validateConduitInlineStateTransactions(
+    DifferentialRevision $object,
+    $type,
+    array $xactions) {
+
+    $errors = array();
+    $actor = $this->getActor();
+    $type_comment = PhabricatorPHIDConstants::PHID_TYPE_XCMT;
+
+    foreach ($xactions as $xaction) {
+      if (!$xaction->getMetadataValue('inline.conduit')) {
+        continue;
+      }
+
+      $new = $xaction->getNewValue();
+      $phids = array_keys($new);
+
+      $bad_phids = array();
+      foreach ($phids as $phid) {
+        if (phid_get_type($phid) !== $type_comment) {
+          $bad_phids[] = $phid;
+        }
+      }
+
+      if ($bad_phids) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          pht(
+            'These PHIDs are not inline comments: %s.',
+            implode(', ', $bad_phids)),
+          $xaction);
+        continue;
+      }
+
+      $inlines = array();
+      if ($phids && $object->getPHID()) {
+        $inlines = id(new DifferentialDiffInlineCommentQuery())
+          ->setViewer($actor)
+          ->withObjectPHIDs(array($object->getPHID()))
+          ->withPHIDs($phids)
+          ->execute();
+        $inlines = mpull($inlines, 'newInlineCommentObject', 'getPHID');
+      }
+
+      $missing_phids = array();
+      $draft_phids = array();
+      $denied_phids = array();
+      foreach ($phids as $phid) {
+        $inline = idx($inlines, $phid);
+        if (!$inline || $inline->getIsDeleted()) {
+          $missing_phids[] = $phid;
+        } else if ($inline->isDraft()) {
+          $draft_phids[] = $phid;
+        } else if (!$inline->canViewerChangeDoneState($actor, $object)) {
+          $denied_phids[] = $phid;
+        }
+      }
+
+      if ($missing_phids) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          pht(
+            'These inline comments do not exist on this revision, or you do '.
+            'not have permission to see them: %s.',
+            implode(', ', $missing_phids)),
+          $xaction);
+      }
+
+      if ($draft_phids) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          pht(
+            'These inline comments are not published: %s.',
+            implode(', ', $draft_phids)),
+          $xaction);
+      }
+
+      if ($denied_phids) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          pht(
+            'You can not mark these inline comments as done or not done, '.
+            'because you are not the revision author: %s.',
+            implode(', ', $denied_phids)),
           $xaction);
       }
     }

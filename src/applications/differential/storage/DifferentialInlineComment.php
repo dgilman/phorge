@@ -50,6 +50,36 @@ final class DifferentialInlineComment
     return $obj;
   }
 
+  /**
+   * Test if a viewer may mark this inline comment as "Done" or "Not Done".
+   *
+   * @param PhabricatorUser $viewer
+   * @param DifferentialRevision $revision The revision of this comment.
+   * @return bool
+   */
+  public function canViewerChangeDoneState(
+    PhabricatorUser $viewer,
+    DifferentialRevision $revision) {
+
+    $viewer_phid = $viewer->getPHID();
+    if (!$viewer_phid) {
+      return false;
+    }
+
+    // You own the revision, so you can mark the comment as "Done".
+    if ($viewer_phid == $revision->getAuthorPHID()) {
+      return true;
+    }
+
+    // You made this comment and it's still a draft, so you can mark it as
+    // "Done".
+    if ($viewer_phid == $this->getAuthorPHID() && $this->isDraft()) {
+      return true;
+    }
+
+    return false;
+  }
+
   public function setChangesetID($id) {
     $this->getStorageObject()->setChangesetID($id);
     return $this;

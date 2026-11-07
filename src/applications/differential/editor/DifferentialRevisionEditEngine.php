@@ -311,6 +311,21 @@ final class DifferentialRevisionEditEngine
       ->setConduitTypeDescription(pht('List of commits.'))
       ->setValue(array());
 
+    $fields[] = id(new DifferentialRevisionInlineDoneEditField())
+      ->setKey('inlines.done')
+      ->setIsFormField(false)
+      ->setTransactionType(PhabricatorTransactions::TYPE_INLINESTATE)
+      ->setConduitDescription(
+        pht('Mark published inline comments as done or not done.'))
+      ->setConduitTypeDescription(
+        pht('Map of inline comment PHIDs to done states.'))
+      ->setConduitDocumentation(
+        pht(
+          'Pass a map with inline comment PHIDs as keys. Use `true` to '.
+          'mark an inline comment as done, or `false` to mark it as not '.
+          'done. For example: `{"PHID-XCMT-1111": true}`. Only the revision '.
+          'author can change the state of published inline comments.'));
+
     $actions = DifferentialRevisionActionTransaction::loadAllActions();
     $actions = msortv($actions, 'getRevisionActionOrderVector');
 
