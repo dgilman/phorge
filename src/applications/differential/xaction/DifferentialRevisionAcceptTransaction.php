@@ -146,6 +146,23 @@ final class DifferentialRevisionAcceptTransaction
     return array($options, $value);
   }
 
+  public function newEditField(
+    DifferentialRevision $revision,
+    PhabricatorUser $viewer) {
+
+    // Let API callers choose the reviewers to accept as, like the checkboxes
+    // in the web UI do. This is the only way to "Force accept" from the API.
+    return parent::newEditField($revision, $viewer)
+      ->setConduitOptions(true)
+      ->setConduitDocumentation(
+        pht(
+          'Pass `true` to accept as yourself and as all reviewers you have '.
+          'authority for. To accept as specific reviewers, pass a list of '.
+          'reviewer PHIDs instead. The list may include your own user PHID, '.
+          'packages and projects you have authority for, and reviewers you '.
+          'can force accept on behalf of.'));
+  }
+
   public function generateOldValue($object) {
     $actor = $this->getActor();
     return $this->isViewerFullyAccepted($object, $actor);

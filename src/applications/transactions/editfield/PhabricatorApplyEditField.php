@@ -7,6 +7,7 @@ final class PhabricatorApplyEditField
   private $actionConflictKey;
   private $actionSubmitButtonText;
   private $options;
+  private $conduitOptions;
 
   protected function newControl() {
     return null;
@@ -48,6 +49,22 @@ final class PhabricatorApplyEditField
     return $this->options;
   }
 
+  /**
+   * Allow Conduit callers to pass a list of option values (for example,
+   * reviewer PHIDs) in place of `true`.
+   *
+   * @param bool $conduit_options
+   * @return self
+   */
+  public function setConduitOptions($conduit_options) {
+    $this->conduitOptions = $conduit_options;
+    return $this;
+  }
+
+  public function getConduitOptions() {
+    return $this->conduitOptions;
+  }
+
   protected function newHTTPParameterType() {
     if ($this->getOptions()) {
       return new AphrontPHIDListHTTPParameterType();
@@ -57,7 +74,11 @@ final class PhabricatorApplyEditField
   }
 
   protected function newConduitParameterType() {
-    return new ConduitBoolParameterType();
+    if ($this->getConduitOptions()) {
+      return new ConduitBoolOrPHIDListParameterType();
+    } else {
+      return new ConduitBoolParameterType();
+    }
   }
 
   public function shouldGenerateTransactionsFromSubmit() {
