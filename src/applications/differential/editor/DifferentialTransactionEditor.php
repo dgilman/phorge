@@ -74,6 +74,87 @@ final class DifferentialTransactionEditor
     return $types;
   }
 
+  protected function validateTransaction(
+    PhabricatorLiskDAO $object,
+    $type,
+    array $xactions) {
+
+    $errors = parent::validateTransaction($object, $type, $xactions);
+
+    if ($type === PhabricatorTransactions::TYPE_EDGE) {
+      $errors = array_merge(
+        $errors,
+        $this->validateCommitEdgeTransactions($object, $type, $xactions));
+    }
+
+    return $errors;
+  }
+
+  /**
+   * Make sure that "Revision Has Commit" edges only point at commits that the
+   * actor can see. Use the same checks as "Edit Related Commits" in the web
+   * UI, because the API can send any PHID.
+   */
+  private function validateCommitEdgeTransactions(
+    DifferentialRevision $object,
+    $type,
+    array $xactions) {
+
+    $errors = array();
+    $actor = $this->getActor();
+    $edge_commit = DifferentialRevisionHasCommitEdgeType::EDGECONST;
+
+    $relationship = id(new DifferentialRevisionHasCommitRelationship())
+      ->setViewer($actor);
+
+    foreach ($xactions as $xaction) {
+      if ($xaction->getMetadataValue('edge:type') != $edge_commit) {
+        continue;
+      }
+
+      $new = $xaction->getNewValue();
+      $add_phids = array_merge(
+        array_keys(idx($new, '+', array())),
+        array_keys(idx($new, '=', array())));
+
+      // Existing edges may point at commits which the actor can not see.
+      // Only check the commits which the actor adds.
+      if ($object->getPHID()) {
+        $old_phids = PhabricatorEdgeQuery::loadDestinationPHIDs(
+          $object->getPHID(),
+          $edge_commit);
+        $add_phids = array_values(array_diff($add_phids, $old_phids));
+      }
+
+      if (!$add_phids) {
+        continue;
+      }
+
+      $dst_objects = id(new PhabricatorObjectQuery())
+        ->setViewer($actor)
+        ->withPHIDs($add_phids)
+        ->requireCapabilities(
+          $relationship->getRequiredRelationshipCapabilities())
+        ->execute();
+      $dst_objects = mpull($dst_objects, null, 'getPHID');
+
+      try {
+        $relationship->assertCanRelateObjects(
+          $object,
+          $add_phids,
+          $dst_objects);
+      } catch (Exception $ex) {
+        $errors[] = new PhabricatorApplicationTransactionValidationError(
+          $type,
+          pht('Invalid'),
+          $ex->getMessage(),
+          $xaction);
+      }
+    }
+
+    return $errors;
+  }
+
   protected function expandTransactions(
     PhabricatorLiskDAO $object,
     array $xactions) {

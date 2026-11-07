@@ -298,6 +298,19 @@ final class DifferentialRevisionEditEngine
       ->setConduitTypeDescription(pht('List of revisions.'))
       ->setValue(array());
 
+    $fields[] = id(new PhabricatorHandlesEditField())
+      ->setKey('commits')
+      ->setUseEdgeTransactions(true)
+      ->setIsFormField(false)
+      ->setTransactionType(PhabricatorTransactions::TYPE_EDGE)
+      ->setMetadataValue(
+        'edge:type',
+        DifferentialRevisionHasCommitEdgeType::EDGECONST)
+      ->setDescription(pht('Commits associated with this revision.'))
+      ->setConduitDescription(pht('Change associated commits.'))
+      ->setConduitTypeDescription(pht('List of commits.'))
+      ->setValue(array());
+
     $actions = DifferentialRevisionActionTransaction::loadAllActions();
     $actions = msortv($actions, 'getRevisionActionOrderVector');
 
