@@ -86,9 +86,13 @@ JX.behavior('phabricator-watch-anchor', function() {
     if (!node) {
       if (retry_ms > 0) {
         retry_ms -= wait_ms;
-        setTimeout(try_anchor, wait_ms);
+        setTimeout(seek_anchor, wait_ms);
         return;
       }
+
+      // We stopped trying. Other code may handle this anchor, for example a
+      // link to a line in a diff.
+      return;
     }
 
     // If we've found a new target, highlight it.
