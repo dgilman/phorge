@@ -84,6 +84,15 @@ JX.install('DiffChangesetList', {
     JX.enableDispatch(window, 'selectionchange');
     JX.Stratcom.listen('selectionchange', null, onrange);
 
+    var onlinelink = JX.bind(this, this._ifawake, this._onlinelink);
+    JX.Stratcom.listen(
+      'click',
+      ['differential-changeset', 'tag:td'],
+      onlinelink);
+
+    var onhashchange = JX.bind(this, this._ifawake, this._loadLineAnchor);
+    JX.Stratcom.listen('hashchange', null, onhashchange);
+
     this._setupInlineCommentListeners();
   },
 
@@ -113,6 +122,10 @@ JX.install('DiffChangesetList', {
     _rangeActive: false,
     _rangeOrigin: null,
     _rangeTarget: null,
+
+    _lineAnchor: null,
+    _lineAnchorCells: null,
+    _lineAnchorScroll: false,
 
     _bannerNode: null,
     _unsavedButton: null,
@@ -153,6 +166,8 @@ JX.install('DiffChangesetList', {
 
       this._initialized = true;
       var pht = this.getTranslations();
+
+      this._loadLineAnchor();
 
       // We may be viewing the normal "/D123" view (with all the changesets)
       // or the standalone view (with just one changeset). In the standalone
@@ -1706,6 +1721,215 @@ JX.install('DiffChangesetList', {
 
     getDisplaySideFromHeader: function(th) {
       return (th.parentNode.firstChild != th) ? 'right' : 'left';
+    },
+
+    _onlinelink: function(e) {
+      // When the user clicks the text of a line, put a link to the line into
+      // the URI, like "#change-abcdefghijklR23", so they can copy it. Clicking
+      // a line number creates an inline comment instead. Don't change the
+      // document here.
+
+      if (!e.isNormalClick()) {
+        return;
+      }
+
+      // Ignore clicks on links (like symbol links) and clicks inside inline
+      // comments.
+      if (!e.getNode('differential-diff') ||
+          e.getNode('inline-row') ||
+          e.getNode('tag:a')) {
+        return;
+      }
+
+      // Don't change the URI when the user selects text, for example to copy
+      // it.
+      var selection = window.getSelection();
+      if (selection && !selection.isCollapsed) {
+        return;
+      }
+
+      var cell = e.getNode('tag:td');
+      if (this._hasClass(cell, 'n')) {
+        return;
+      }
+
+      var number_cell = this._getLineNumberCellForContent(cell);
+      if (!number_cell) {
+        return;
+      }
+
+      var node = e.getNode('differential-changeset');
+      var anchor = this.getChangesetForNode(node).getAnchorName();
+      if (!anchor) {
+        return;
+      }
+
+      var side = this.getDisplaySideFromHeader(number_cell);
+      var number = this.getLineNumberFromHeader(number_cell);
+      var fragment = anchor + (side === 'left' ? 'L' : 'R') + number;
+
+      var uri = JX.$U(window.location).setFragment(fragment);
+
+      // Use "replaceState()" instead of changing "location.hash", so the
+      // browser does not scroll or add a history entry.
+      window.history.replaceState(window.history.state, '', uri.toString());
+    },
+
+    _getLineNumberCellForContent: function(cell) {
+      // Walk left to the line number cell for this side of the diff. If we
+      // get to the content of the other side first, this side has no line
+      // number. For example, this is the empty right side of a removed line
+      // in the two-up view.
+      var cursor = cell.previousSibling;
+      while (cursor) {
+        if (JX.DOM.isType(cursor, 'td')) {
+          if (this._isContentCell(cursor)) {
+            return null;
+          }
+
+          if (this.getLineNumberFromHeader(cursor)) {
+            return cursor;
+          }
+        }
+        cursor = cursor.previousSibling;
+      }
+
+      return null;
+    },
+
+    _getContentCellForLineNumber: function(cell) {
+      // Walk right past the other line number and the copy marker, if they
+      // are there, to the content of the line.
+      var cursor = cell.nextSibling;
+      while (cursor) {
+        if (JX.DOM.isType(cursor, 'td')) {
+          if (!this._hasClass(cursor, 'n') && !this._hasClass(cursor, 'copy')) {
+            return cursor;
+          }
+        }
+        cursor = cursor.nextSibling;
+      }
+
+      return null;
+    },
+
+    _hasClass: function(node, class_name) {
+      var classes = ' ' + node.className + ' ';
+      return (classes.indexOf(' ' + class_name + ' ') > -1);
+    },
+
+    _loadLineAnchor: function() {
+      // If the URI has a link to a line, like "#change-abcdefghijklL11", load
+      // the changeset if necessary, then scroll to the line and highlight it.
+
+      this._setLineAnchorHighlight(null);
+      this._lineAnchor = null;
+      this._lineAnchorScroll = false;
+
+      var fragment = window.location.hash.replace(/^#/, '');
+      if (!fragment.length) {
+        return;
+      }
+
+      for (var ii = 0; ii < this._changesets.length; ii++) {
+        var changeset = this._changesets[ii];
+
+        var anchor = changeset.getAnchorName();
+        if (!anchor || (fragment.indexOf(anchor) !== 0)) {
+          continue;
+        }
+
+        // If this is a link to the changeset and not to a line, the normal
+        // anchor behavior handles it.
+        var match = fragment.substring(anchor.length).match(/^([LR])(\d+)$/);
+        if (!match) {
+          return;
+        }
+
+        this._lineAnchor = {
+          changeset: changeset,
+          side: (match[1] === 'L') ? 'left' : 'right',
+          number: parseInt(match[2], 10)
+        };
+
+        if (changeset.isLoading()) {
+          // If this changeset does not load automatically, load it now. In
+          // all cases, load it before other changesets.
+          changeset.load();
+
+          var routable = changeset.getRoutable();
+          if (routable) {
+            routable.setPriority(2000);
+          }
+        } else {
+          this.didLoadChangeset(changeset);
+        }
+
+        return;
+      }
+    },
+
+    didLoadChangeset: function(changeset) {
+      var anchor = this._lineAnchor;
+      if (anchor && (anchor.changeset === changeset)) {
+        this._lineAnchor = null;
+
+        // The line may not be in the document, for example if it is in
+        // context which is not shown.
+        var node = changeset.getLineNumberNode(anchor.side, anchor.number);
+        if (node) {
+          this._setLineAnchorHighlight(node);
+          this._lineAnchorScroll = true;
+        }
+      }
+
+      if (!this._lineAnchorScroll) {
+        return;
+      }
+
+      // Changesets which load after this one can move the line, and the
+      // document may be too short to scroll to the line until changesets
+      // below it load. Scroll to the line again until all changesets load.
+      var line_node = this._lineAnchorCells[0];
+      JX.DOM.scrollToPosition(0, JX.$V(line_node).y - 60);
+
+      for (var ii = 0; ii < this._changesets.length; ii++) {
+        var item = this._changesets[ii];
+        if (item.isLoaded() && item.isLoading()) {
+          return;
+        }
+      }
+
+      this._lineAnchorScroll = false;
+    },
+
+    _setLineAnchorHighlight: function(node) {
+      var ii;
+
+      var cells = this._lineAnchorCells;
+      if (cells) {
+        for (ii = 0; ii < cells.length; ii++) {
+          JX.DOM.alterClass(cells[ii], 'line-anchor-target', false);
+        }
+        this._lineAnchorCells = null;
+      }
+
+      if (!node) {
+        return;
+      }
+
+      cells = [node];
+
+      var content_cell = this._getContentCellForLineNumber(node);
+      if (content_cell) {
+        cells.push(content_cell);
+      }
+
+      for (ii = 0; ii < cells.length; ii++) {
+        JX.DOM.alterClass(cells[ii], 'line-anchor-target', true);
+      }
+
+      this._lineAnchorCells = cells;
     },
 
     _onrangedown: function(e) {

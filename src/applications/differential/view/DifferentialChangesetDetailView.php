@@ -262,6 +262,7 @@ final class DifferentialChangesetDetailView extends AphrontView {
           'icon' => $display_icon,
           'pathParts' => $path_parts,
           'symbolPath' => $display_filename,
+          'anchorName' => $changeset->getAnchorName(),
 
           'pathIconIcon' => $changeset->getPathIconIcon(),
           'pathIconColor' => $changeset->getPathIconColor(),

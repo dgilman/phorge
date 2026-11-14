@@ -34,6 +34,7 @@ JX.install('DiffChangeset', {
     this._rightID = data.right;
 
     this._displayPath = JX.$H(data.displayPath);
+    this._anchorName = data.anchorName;
     this._pathParts = data.pathParts;
     this._icon = data.icon;
 
@@ -87,6 +88,7 @@ JX.install('DiffChangeset', {
     _visible: true,
 
     _displayPath: null,
+    _anchorName: null,
 
     _changesetList: null,
     _icon: null,
@@ -170,6 +172,74 @@ JX.install('DiffChangeset', {
      */
     isLoaded: function() {
       return this._loaded;
+    },
+
+
+    /**
+     * Is the content of this changeset still loading?
+     *
+     * Unlike @{method:isLoaded}, this method returns `true` until the content
+     * is present in the document.
+     *
+     * @return bool True if the content is not present yet.
+     */
+    isLoading: function() {
+      return this._isLoading;
+    },
+
+
+    /**
+     * Get the anchor name which identifies this changeset in a URI fragment,
+     * like "change-abcdefghijkl".
+     *
+     * @return string|null Anchor name.
+     */
+    getAnchorName: function() {
+      return this._anchorName;
+    },
+
+
+    /**
+     * Find the line number cell for a line in the document.
+     *
+     * @param string Display side, either "left" or "right".
+     * @param int Line number.
+     * @return node|null Line number cell, or null if the line is not in the
+     *   document.
+     */
+    getLineNumberNode: function(side, number) {
+      var list = this.getChangesetList();
+      var cells = JX.DOM.scry(this._node, 'td');
+      for (var ii = 0; ii < cells.length; ii++) {
+        var cell = cells[ii];
+
+        // NOTE: Compare the attribute first, because the other checks are
+        // slow and the diff can have many cells.
+        if (cell.getAttribute('data-n') !== String(number)) {
+          continue;
+        }
+
+        if (list.getDisplaySideFromHeader(cell) !== side) {
+          continue;
+        }
+
+        if (list.getLineNumberFromHeader(cell) !== number) {
+          continue;
+        }
+
+        // Ignore line numbers in diffs inside inline comments, like edit
+        // suggestions.
+        try {
+          JX.DOM.findAbove(cell, null, 'inline-row');
+          continue;
+        } catch (ex) {
+          // Not inside an inline comment.
+        }
+
+        return cell;
+      }
+
+      return null;
     },
 
 
@@ -668,6 +738,8 @@ JX.install('DiffChangeset', {
       }
 
       this._onchangesetresponse(response);
+
+      this.getChangesetList().didLoadChangeset(this);
     },
 
     _onchangesetresponse: function(response) {

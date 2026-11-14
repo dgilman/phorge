@@ -496,6 +496,14 @@ unselectable. */
   background: {$yellow};
 }
 
+.differential-diff tr td.line-anchor-target {
+  background: {$lightyellow};
+}
+
+.differential-diff tr td.n.line-anchor-target {
+  color: {$darkgreytext};
+}
+
 .inline-hover-container {
   position: absolute;
   color: {$lightgreytext};
